@@ -1,0 +1,4 @@
+gmux_backlight/gmux_backlight
+gmux_switch/gmux_switch
+*.o
+*.core

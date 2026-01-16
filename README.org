@@ -1,0 +1,33 @@
+* FREEBSD GMUX CONTROL
+
+GMUX HAX for my decrepit, but lovely, 17" MacBook Pro 8,3, running FreeBSD.
+
+** About Apple's Gmux Chip
+
+The gmux is a small microcontroller (likely an LPC-based chip) on the logic
+board that:
+
++ Multiplexes the display between Intel and AMD GPUs
++ Controls the LCD backlight PWM
++ Handles GPU power switching
++ Communicates via x86 I/O ports in the range ~0x700-0x7FF~
+
+** Known Gmux I/O Ports (MBP 8,x Series)
+
+| Port    | Function                              |
+|---------+---------------------------------------|
+| ~0x700~ | Gmux version/identifier               |
+| ~0x710~ | Switch DDC (display data channel)     |
+| ~0x724~ | Discrete GPU power control            |
+| ~0x728~ | Switch display output between GPUs    |
+| ~0x740~ | Integrated GPU power control          |
+| ~0x774~ | *Backlight brightness* (32-bit value) |
+| ~0x778~ | Backlight power on/off                |
+
+The value ~0x774~ was discovered through reverse engineering the Apple gmux
+driver from macOS and the Linux ~apple-gmux~ kernel module.
+
+** Our way in...
+
+~machine/cpufunc.h~ is a *FreeBSD-specific* C library that provides ~inl()~ and
+~outl()~ for port I/O.

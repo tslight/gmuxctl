@@ -1,0 +1,20 @@
+* GMUX SWITCHER
+
+From studying the Linux driver, the discrete power port may accept different
+values on different models:
+
+| Value  | Possible Meaning                    |
+|--------+-------------------------------------|
+| ~0x00~ | Full power off (what we want)       |
+| ~0x01~ | Power on                            |
+| ~0x02~ | Power on (alternate on some models) |
+| ~0x03~ | Low power / D3 state?               |
+
+If ~0x00~ doesn't work try:
+
+#+BEGIN_SRC c
+/* Try forcing GPU into D3 state first */
+outb(GMUX_PORT_DISCRETE_POWER, 0x03);
+usleep(100000);
+outb(GMUX_PORT_DISCRETE_POWER, 0x00);
+#+END_SRC

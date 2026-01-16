@@ -1,0 +1,106 @@
+# GMUX BACKLIGHT
+
+FreeBSD specific program that directly communicates with Apple's gmux chip via
+I/O ports to control the LCD backlight brightness.
+
+** PORT ACCESS
+*** What is ~/dev/io~?
+
+This is a *FreeBSD-specific* device that grants a process access to the x86 I/O
+port address space.
+
++ When you successfully open ~/dev/io~, the kernel sets the *IOPL (I/O
+  Privilege Level)* for your process
++ This allows ring-3 (userspace) code to execute privileged ~IN~ and ~OUT~ CPU
+  instructions
++ Requires *root privileges* to open
++ The file descriptor ~fd~ isn't used for read/write — opening it is just the
+  permission gate
+
+** READING
+
+The ~inl()~ function allows us to read a *32-bit value* from the gmux chip's
+brightness register.
+
+| Function | Bit Width | x86 Instruction |
+|----------+-----------+-----------------|
+| ~inb()~  | 8-bit     | ~IN AL, DX~     |
+| ~inw()~  | 16-bit    | ~IN AX, DX~     |
+| ~inl()~  | 32-bit    | ~IN EAX, DX~    |
+
+~inl(0x774)~ compiles to something like:
+
+#+BEGIN_SRC asm
+mov dx, 0x774
+in eax, dx
+#+END_SRC
+
+The gmux brightness register uses a *16-bit range*:
+
+| Value    | Meaning            |
+|----------+--------------------|
+| ~0x0000~ | 0% (backlight off) |
+| ~0x7FFF~ | ~50%               |
+| ~0xFFFF~ | 100% (maximum)     |
+
+These formula convert to a percentage:
+
++ ~0xFFFF * 100 / 0xFFFF = 100~
++ ~0x8000 * 100 / 0xFFFF ≈ 50~
++ ~0x0000 * 100 / 0xFFFF = 0~
+
+** WRITING
+
+This is the inverse of the read formula:
+
+| Input | Calculation         | Result   |
+|-------+---------------------+----------|
+|    0% | ~0 * 65535 / 100~   | ~0x0000~ |
+|   50% | ~50 * 65535 / 100~  | ~0x7FFF~ |
+|  100% | ~100 * 65535 / 100~ | ~0xFFFF~ |
+
+~outl()~ is the write counterpart to ~inl()~:
+
+| Function | Bit Width | x86 Instruction |
+|----------+-----------+-----------------|
+| ~outb()~ | 8-bit     | ~OUT DX, AL~    |
+| ~outw()~ | 16-bit    | ~OUT DX, AX~    |
+| ~outl()~ | 32-bit    | ~OUT DX, EAX~   |
+
+The CPU sends the 32-bit value ~val~ to I/O port ~0x774~, and the gmux chip
+immediately adjusts the backlight PWM duty cycle.
+
+** FLOW
+
+	 ┌─────────────────┐
+	 │  Command Line   │
+	 │   argv[1]="75"  │
+	 └────────┬────────┘
+		  │ atoi()
+		  ▼
+	 ┌─────────────────┐
+	 │  pct = 75       │
+	 └────────┬────────┘
+		  │ pct * 0xFFFF / 100
+		  ▼
+	 ┌─────────────────┐
+	 │  val = 0xBFFF   │
+	 └────────┬────────┘
+		  │ outl(0x774, val)
+		  ▼
+	 ┌─────────────────┐
+	 │  x86 CPU        │
+	 │  OUT DX, EAX    │
+	 └────────┬────────┘
+		  │ I/O Bus
+		  ▼
+	 ┌─────────────────┐
+	 │  Gmux Chip      │
+	 │  (LPC Device)   │
+	 └────────┬────────┘
+		  │ PWM Signal
+		  ▼
+	 ┌─────────────────┐
+	 │  LCD Backlight  │
+	 │  LEDs @ 75%     │
+	 └─────────────────┘
