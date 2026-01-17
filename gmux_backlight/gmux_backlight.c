@@ -1,7 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <errno.h>
-#include <limits.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <inttypes.h>
@@ -26,6 +25,10 @@
 #define GMUX_MAX_BRIGHTNESS_MIN 0x10000
 #define GMUX_MAX_BRIGHTNESS_MAX 0x30000
 
+// Parsing modes
+#define MODE_ABSOLUTE 0
+#define MODE_RELATIVE 1
+
 static uint32_t get_max_brightness(void) {
   uint32_t max_val;
 
@@ -44,71 +47,115 @@ static uint32_t get_max_brightness(void) {
   return GMUX_MAX_BRIGHTNESS_FALLBACK;
 }
 
-static int parse_percent(const char *str, int *result) {
-  // It's safer to use strtol over atoi as we verify the input as a valid
-  // integer whereas atoi will just return 0 if not a valid int.
+static int parse_brightness_arg(const char *str, int *value, int *mode) {
   char *endptr;
   long val;
+  const char *num_start = str;
+
+  // Check for explicit +/- prefix
+  if (str[0] == '+') {
+    *mode = MODE_RELATIVE;
+    num_start = str + 1;
+  } else if (str[0] == '-') {
+    *mode = MODE_RELATIVE;
+    num_start = str;
+  } else {
+    *mode = MODE_ABSOLUTE;
+  }
 
   errno = 0; // Global so clear before use.
 
+  // It's safer to use strtol over atoi as we verify the input as a valid
+  // integer whereas atoi will just return 0 if not a valid int.
   // Using strtol "to long" function instead of "to unsigned long" as strtoul
   // silently wraps negative numbers, such that -1 would give us
   // 18446744073709551615 on 64-bit!
-  val = strtol(str, &endptr, 10); // last argument is base
+  val = strtol(num_start, &endptr, 10);
 
-  // If endptr points to same address as str then we have no digits.
-  if (endptr == str) {
-    fprintf(stderr, "Error: no digits found in '%s'\n", str);
+  // If endptr points to same address as num_start then we have no digits.
+  if (endptr == num_start) {
+    fprintf(stderr, "ERROR: no digits found in '%s'\n", num_start);
     return -1;
   }
 
   // De-reference and check if the value after any digits is anything but the
   // null terminator.
   if (*endptr != '\0') {
-    fprintf(stderr, "Error: trailing garbage after number: '%s'\n", endptr);
+    fprintf(stderr, "ERROR: trailing garbage after number: '%s'\n", endptr);
     return -1;
   }
 
   // ERANGE is if the value was outside the bounds of LONG_MIN/MAX.
-  if (errno == ERANGE || val < 0 || val > 100) {
-    fprintf(stderr, "Error: value must be 0-100\n");
+  if (errno == ERANGE) {
+    fprintf(stderr, "ERROR: number out of range\n");
     return -1;
   }
 
-  *result = (int)val;
+  if (*mode == MODE_ABSOLUTE) {
+    if (val < 0 || val > 100) {
+      fprintf(stderr, "ERROR: absolute value must be 0-100\n");
+      return -1;
+    }
+  } else {
+    if (val < -100 || val > 100) {
+      fprintf(stderr, "ERROR: relative value must be -100 to +100\n");
+      return -1;
+    }
+  }
+
+  *value = (int)val;
   return 0;
 }
 
 int main(int argc, char *argv[]) {
-  int fd, pct;
-  uint32_t val, max_brightness;
+  int fd, value, mode, pct;
+  uint32_t raw_val, max_brightness;
 
   // Grants I/O port access for the lifetime of the open fd
   fd = open("/dev/io", O_RDWR);
   if (fd < 0) {
-    perror("opening /dev/io - must be run as root!");
+    perror("ERROR opening /dev/io");
+    fprintf(stderr, "Are you running as root (with sudo)?\n");
     return 1;
   }
 
   max_brightness = get_max_brightness();
 
   if (argc == 1) {
-    val = inl(GMUX_PORT_BRIGHTNESS);
-    printf("Current brightness: 0x%x (%d%%)\n",
-	   val, (int)((uint64_t)val * 100 / max_brightness));
+    raw_val = inl(GMUX_PORT_BRIGHTNESS);
+    // max_brightness/2 before division rounds to nearest integer, otherwise
+    // rounding errors in the integer division truncates the result.
+    pct = (int)(((uint64_t)raw_val * 100 + max_brightness / 2) / max_brightness);
+    printf("Current brightness: 0x%x (%d%%)\n", raw_val, pct);
   } else {
-    if (parse_percent(argv[1], &pct) != 0) {
+    if (parse_brightness_arg(argv[1], &value, &mode) != 0) {
       close(fd);
       return 1;
     }
-    // Inverse of the read formula. Cast to uint64_t in the multiplication
-    // prevents overflow in the unlikely case that max brightness exceeds 32
-    // bit space, say 0xFFFFFFFF
-    val = (uint32_t)((uint64_t)pct * max_brightness / 100);
 
-    outl(GMUX_PORT_BRIGHTNESS, val);
-    printf("Set brightness to %d%% (0x%x)\n", pct, val);
+    if (mode == MODE_RELATIVE) {
+      // Work in raw values to avoid cumulative rounding errors
+      uint32_t current_raw = inl(GMUX_PORT_BRIGHTNESS);
+      // Cast to signed because adjustment can be -ve, and so can new_raw
+      // before clamping & temporarily cast to 64 bit to avoid overflow
+      int32_t adjustment = (int32_t)(((int64_t)value * max_brightness) / 100);
+      int32_t new_raw = (int32_t)current_raw + adjustment;
+      if (new_raw < 0) new_raw = 0; // Clamp to valid range
+      if (new_raw > (int32_t)max_brightness) new_raw = (int32_t)max_brightness;
+      raw_val = (uint32_t)new_raw; // cast back to unsigned
+    } else {
+      // Absolute mode: convert percent to raw. Inverse of read logic.
+      // Cast to uint64_t in the multiplication prevents overflow in the unlikely
+      // case that max brightness exceeds 32 bit space, say 0xFFFFFFFF
+      raw_val = (uint32_t)(((uint64_t)value * max_brightness) / 100);
+    }
+
+    outl(GMUX_PORT_BRIGHTNESS, raw_val);
+    // Only convert to percent for display purposes. max_brightness/2 before
+    // division rounds to nearest integer, otherwise rounding errors in the
+    // integer division truncates and may result in inaccurate percent display
+    pct = (int)(((uint64_t)raw_val * 100 + max_brightness / 2) / max_brightness);
+    printf("Set brightness to %d%% (0x%x)\n", pct, raw_val);
   }
 
   close(fd);
