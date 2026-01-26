@@ -1,13 +1,16 @@
 CC	= cc
-CFLAGS	= -O2 -Wall -Wunused -Wmissing-prototypes -Wstrict-prototypes
+CFLAGS  = -O2 -pedantic -std=c11
+CFLAGS += -Wall -Wconversion -Wextra -Wshadow -Wunused
+CFLAGS += -Wmissing-prototypes -Wstrict-prototypes
+CFLAGS += -Wuninitialized -Wimplicit-fallthrough
 
-PREFIX	= /usr/local
+PREFIX	= /usr
 BINDIR	= $(DESTDIR)$(PREFIX)/bin
 
 INSTALL_PROGRAM = install -s
 
-PROG	= gmux_backlight
-OBJS	= gmux_backlight.o
+PROG	= backlight
+OBJS	= backlight.o
 
 all: $(PROG)
 

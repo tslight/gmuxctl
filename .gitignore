@@ -1,4 +1,5 @@
-gmux_backlight/gmux_backlight
-gmux_switch/gmux_switch
-*.o
+backlight/backlight
+switch/switch
+dump/dump
 *.core
+*.o
